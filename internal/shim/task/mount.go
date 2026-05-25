@@ -54,27 +54,45 @@ type diskOptions struct {
 	vmdk     bool
 }
 
+type pmemImageOptions struct {
+	name     string
+	source   string
+	readOnly bool
+}
+
+func erofsTransportMode() (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("NERDBOX_EROFS_TRANSPORT")))
+	if mode == "" {
+		return "block", nil
+	}
+	switch mode {
+	case "block", "pmem":
+		return mode, nil
+	default:
+		return "", fmt.Errorf("invalid NERDBOX_EROFS_TRANSPORT=%q: %w", mode, errdefs.ErrInvalidArgument)
+	}
+}
+
 // transformMounts does not perform any local mounts but transforms
 // the mounts to be used inside the VM via virtio
 func transformMounts(ctx context.Context, id string, ms []*types.Mount, da *diskAllocator) ([]*types.Mount, []sandbox.Opt, error) {
+	erofsTransport, err := erofsTransportMode()
+	if err != nil {
+		return nil, nil, err
+	}
+
 	var (
-		addDisks []diskOptions
-		am       []*types.Mount
-		sbOpts   []sandbox.Opt
-		err      error
+		pmems         int
+		addDisks      []diskOptions
+		addPmemImages []pmemImageOptions
+		am            []*types.Mount
+		sbOpts        []sandbox.Opt
 	)
 
 	log.G(ctx).Trace("transformMounts", ms)
 	for _, m := range ms {
 		switch m.Type {
 		case "erofs":
-			letter := da.Next()
-			disk := fmt.Sprintf("disk-%d-%s", letter, id)
-			// virtiofs implementation has a limit of 36 characters for the tag
-			if len(disk) > 36 {
-				disk = disk[:36]
-			}
-
 			var Options []string
 
 			devices := []string{m.Source}
@@ -84,6 +102,38 @@ func transformMounts(ctx context.Context, id string, ms []*types.Mount, da *disk
 					continue
 				}
 				Options = append(Options, o)
+			}
+
+			if erofsTransport == "pmem" {
+				if len(devices) > 1 {
+					return nil, nil, fmt.Errorf("pmem EROFS transport does not support multi-device EROFS yet: %w", errdefs.ErrNotImplemented)
+				}
+				name := fmt.Sprintf("pmem-%d-%s", pmems, id)
+				if len(name) > 36 {
+					name = name[:36]
+				}
+				device := fmt.Sprintf("/dev/pmem%d", pmems)
+				log.G(ctx).WithField("source", m.Source).WithField("device", device).Info("using pmem image for erofs mount")
+				addPmemImages = append(addPmemImages, pmemImageOptions{
+					name:     name,
+					source:   m.Source,
+					readOnly: true,
+				})
+				am = append(am, &types.Mount{
+					Type:    "erofs",
+					Source:  device,
+					Target:  m.Target,
+					Options: filterOptions(Options),
+				})
+				pmems++
+				continue
+			}
+
+			letter := da.Next()
+			disk := fmt.Sprintf("disk-%d-%s", letter, id)
+			// virtiofs implementation has a limit of 36 characters for the tag
+			if len(disk) > 36 {
+				disk = disk[:36]
 			}
 
 			if len(devices) > 1 {
@@ -186,6 +236,9 @@ func transformMounts(ctx context.Context, id string, ms []*types.Mount, da *disk
 		}
 
 		sbOpts = append(sbOpts, sandbox.WithDisk(do.name, do.source, flags))
+	}
+	for _, po := range addPmemImages {
+		sbOpts = append(sbOpts, sandbox.WithPmemImage(po.name, po.source, po.readOnly))
 	}
 
 	return am, sbOpts, err

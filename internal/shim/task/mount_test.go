@@ -25,6 +25,7 @@ import (
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/stretchr/testify/assert"
 
+	"github.com/containerd/containerd/api/types"
 	"github.com/containerd/containerd/v2/core/mount"
 	"github.com/containerd/nerdbox/internal/shim/sandbox"
 	"github.com/containerd/nerdbox/internal/shim/task/bundle"
@@ -36,6 +37,79 @@ func applyOpts(opts []sandbox.Opt) sandbox.Options {
 		opt(&o)
 	}
 	return o
+}
+
+func TestTransformMountsErofsBlockTransport(t *testing.T) {
+	t.Setenv("NERDBOX_EROFS_TRANSPORT", "")
+	da := newDiskAllocator()
+
+	mounts, opts, err := transformMounts(context.Background(), "cid", []*types.Mount{
+		{
+			Type:    "erofs",
+			Source:  "/tmp/root.erofs",
+			Target:  "/",
+			Options: []string{"loop", "ro"},
+		},
+	}, &da)
+
+	assert.NoError(t, err)
+	if !assert.Len(t, mounts, 1) {
+		return
+	}
+	assert.Equal(t, "/dev/vda", mounts[0].Source)
+	assert.Equal(t, []string{"ro"}, mounts[0].Options)
+
+	sbOpts := applyOpts(opts)
+	assert.Equal(t, []sandbox.Disk{
+		{BlockID: "disk-97-cid", MountPath: "/tmp/root.erofs", Flags: sandbox.DiskFlagReadonly},
+	}, sbOpts.Disks)
+	assert.Empty(t, sbOpts.PmemImages)
+}
+
+func TestTransformMountsErofsPmemTransport(t *testing.T) {
+	t.Setenv("NERDBOX_EROFS_TRANSPORT", "pmem")
+	da := newDiskAllocator()
+
+	mounts, opts, err := transformMounts(context.Background(), "cid", []*types.Mount{
+		{
+			Type:    "erofs",
+			Source:  "/tmp/root.erofs",
+			Target:  "/",
+			Options: []string{"loop", "ro"},
+		},
+	}, &da)
+
+	assert.NoError(t, err)
+	if !assert.Len(t, mounts, 1) {
+		return
+	}
+	assert.Equal(t, "/dev/pmem0", mounts[0].Source)
+	assert.Equal(t, []string{"ro"}, mounts[0].Options)
+	assert.Equal(t, 0, da.count())
+
+	sbOpts := applyOpts(opts)
+	assert.Empty(t, sbOpts.Disks)
+	assert.Equal(t, []sandbox.PmemImage{
+		{ImageID: "pmem-0-cid", MountPath: "/tmp/root.erofs", Readonly: true},
+	}, sbOpts.PmemImages)
+}
+
+func TestTransformMountsErofsPmemRejectsMultiDevice(t *testing.T) {
+	t.Setenv("NERDBOX_EROFS_TRANSPORT", "pmem")
+	da := newDiskAllocator()
+
+	_, opts, err := transformMounts(context.Background(), "cid", []*types.Mount{
+		{
+			Type:    "erofs",
+			Source:  "/tmp/root.erofs",
+			Target:  "/",
+			Options: []string{"device=/tmp/layer.erofs"},
+		},
+	}, &da)
+
+	assert.Error(t, err)
+	assert.Empty(t, applyOpts(opts).PmemImages)
+	assert.Equal(t, 0, da.count())
 }
 
 func TestBlockMountsProvider(t *testing.T) {

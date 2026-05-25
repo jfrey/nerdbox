@@ -53,6 +53,12 @@ type Disk struct {
 	Flags     DiskFlags
 }
 
+type PmemImage struct {
+	ImageID   string
+	MountPath string
+	Readonly  bool
+}
+
 type NIC struct {
 	Endpoint string
 	MAC      net.HardwareAddr
@@ -64,6 +70,7 @@ type NIC struct {
 type Options struct {
 	Filesystems []Filesystem
 	Disks       []Disk
+	PmemImages  []PmemImage
 	NICs        []NIC
 	StateDir    string
 	InitArgs    []string
@@ -89,6 +96,16 @@ func WithDisk(blockID, mountPath string, flags DiskFlags) Opt {
 			BlockID:   blockID,
 			MountPath: mountPath,
 			Flags:     flags,
+		})
+	}
+}
+
+func WithPmemImage(imageID, mountPath string, readonly bool) Opt {
+	return func(o *Options) {
+		o.PmemImages = append(o.PmemImages, PmemImage{
+			ImageID:   imageID,
+			MountPath: mountPath,
+			Readonly:  readonly,
 		})
 	}
 }

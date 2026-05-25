@@ -201,6 +201,17 @@ func (v *vmInstance) AddDisk(ctx context.Context, blockID, mountPath string, opt
 	return nil
 }
 
+func (v *vmInstance) AddPmemImage(ctx context.Context, imageID, imagePath string, opts ...vm.MountOpt) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	if err := v.vmc.AddPmemImage(imageID, imagePath); err != nil {
+		return fmt.Errorf("failed to add pmem image at '%s': %w", imagePath, err)
+	}
+
+	return nil
+}
+
 func (v *vmInstance) AddNIC(ctx context.Context, endpoint string, mac net.HardwareAddr, mode vm.NetworkMode, opts ...vm.NetworkOpt) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()

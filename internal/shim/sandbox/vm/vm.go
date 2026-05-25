@@ -76,6 +76,16 @@ func (s *localsandbox) Start(ctx context.Context, opts ...sandbox.Opt) error {
 		}
 	}
 
+	for _, p := range o.PmemImages {
+		var mountOpts []vm.MountOpt
+		if p.Readonly {
+			mountOpts = append(mountOpts, vm.WithReadOnly())
+		}
+		if err := vmi.AddPmemImage(ctx, p.ImageID, p.MountPath, mountOpts...); err != nil {
+			return err
+		}
+	}
+
 	for _, fs := range o.Filesystems {
 		var mountOpts []vm.MountOpt
 		if fs.Readonly {

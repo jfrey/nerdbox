@@ -52,3 +52,8 @@ func registerLibFunc(fn interface{}, handle uintptr, name string) {
 	}
 	purego.RegisterFunc(fn, addr)
 }
+
+func dlSymbol(handle uintptr, name string) (uintptr, error) {
+	addr, err := syscall.GetProcAddress(syscall.Handle(handle), name)
+	return addr, err
+}

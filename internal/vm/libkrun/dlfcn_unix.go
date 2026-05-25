@@ -31,3 +31,7 @@ func dlClose(handle uintptr) error {
 func registerLibFunc(fn interface{}, handle uintptr, name string) {
 	purego.RegisterLibFunc(fn, handle, name)
 }
+
+func dlSymbol(handle uintptr, name string) (uintptr, error) {
+	return purego.Dlsym(handle, name)
+}

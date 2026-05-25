@@ -20,8 +20,8 @@
 // A [Manager] is the entry point for creating VM instances. Each [Instance]
 // represents one running VM and exposes:
 //
-//   - configuration methods (SetCPUAndMemory, AddFS, AddDisk, AddNIC) that
-//     must be called before [Instance.Start];
+//   - configuration methods (SetCPUAndMemory, AddFS, AddDisk,
+//     AddPmemImage, AddNIC) that must be called before [Instance.Start];
 //   - lifecycle methods ([Instance.Start] and [Instance.Shutdown]);
 //   - communication channels ([Instance.Client] for the TTRPC control plane
 //     and [Instance.StartStream] for raw byte streams) that are valid only
@@ -144,9 +144,9 @@ type StreamOpt func(*StreamOpts)
 // Instance represents a single VM. Methods on Instance are safe for
 // concurrent use, but the lifecycle is strict:
 //
-//   - Configuration methods (SetCPUAndMemory, AddFS, AddDisk, AddNIC) must
-//     be called before [Instance.Start]; calling them after Start returns
-//     an error.
+//   - Configuration methods (SetCPUAndMemory, AddFS, AddDisk,
+//     AddPmemImage, AddNIC) must be called before [Instance.Start];
+//     calling them after Start returns an error.
 //   - [Instance.Client] and [Instance.StartStream] return useful values only
 //     after Start has succeeded.
 //   - [Instance.Shutdown] tears down the VM and releases resources; the
@@ -167,6 +167,11 @@ type Instance interface {
 	// read-only attachment and [WithVmdk] when the file is a VMDK image.
 	// Must be called before [Instance.Start].
 	AddDisk(ctx context.Context, blockID, mountPath string, opts ...MountOpt) error
+
+	// AddPmemImage attaches a host file at imagePath to the guest as a
+	// virtio-pmem image identified by imageID. Use [WithReadOnly] for
+	// read-only attachment. Must be called before [Instance.Start].
+	AddPmemImage(ctx context.Context, imageID, imagePath string, opts ...MountOpt) error
 
 	// AddNIC attaches a virtio-net interface to the guest. endpoint is
 	// the path to the host-side AF_UNIX socket that bridges packets to

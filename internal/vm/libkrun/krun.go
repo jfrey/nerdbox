@@ -179,6 +179,17 @@ func (vmc *vmcontext) AddDisk2(blockID, path string, diskFmt uint32, readonly bo
 	return nil
 }
 
+func (vmc *vmcontext) AddPmemImage(imageID, path string) error {
+	if vmc.lib.AddPmemImage == nil {
+		return fmt.Errorf("libkrun does not support pmem images")
+	}
+	ret := vmc.lib.AddPmemImage(vmc.ctxID, imageID, path)
+	if ret != 0 {
+		return fmt.Errorf("krun_add_pmem_image failed: %d", ret)
+	}
+	return nil
+}
+
 func (vmc *vmcontext) AddNIC(endpoint string, mac net.HardwareAddr, mode vm.NetworkMode, features, flags uint32) error {
 	if vmc.lib.AddNetUnixgram == nil || vmc.lib.AddNetUnixstream == nil {
 		return fmt.Errorf("libkrun not loaded")
@@ -267,6 +278,7 @@ type libkrun struct {
 	SetNetMac          func(ctxID uint32, mac []uint8) int32                                                  `C:"krun_set_net_mac"`
 	AddDisk            func(ctxID uint32, blockId, path string, readonly bool) int32                          `C:"krun_add_disk"`
 	AddDisk2           func(ctxID uint32, blockId, path string, diskFmt uint32, readonly bool) int32          `C:"krun_add_disk2"`
+	AddPmemImage       func(ctxID uint32, imageId, path string) int32                                         `C:"krun_add_pmem_image" optional:"true"`
 	AddNetUnixstream   func(ctxID uint32, path string, fd int, mac []uint8, features, flags uint32) int32     `C:"krun_add_net_unixstream"`
 	AddNetUnixgram     func(ctxID uint32, path string, fd int, mac []uint8, features, flags uint32) int32     `C:"krun_add_net_unixgram"`
 
@@ -335,7 +347,13 @@ func openLibkrun(path string) (_ *libkrun, _ uintptr, retErr error) {
 	var k libkrun
 	ik := reflect.Indirect(reflect.ValueOf(&k))
 	for i := 0; i < ik.NumField(); i++ {
-		cName := ik.Type().Field(i).Tag.Get("C")
+		field := ik.Type().Field(i)
+		cName := field.Tag.Get("C")
+		if field.Tag.Get("optional") == "true" {
+			if _, err := dlSymbol(f, cName); err != nil {
+				continue
+			}
+		}
 		fn := ik.Field(i).Addr().Interface()
 		registerLibFunc(fn, f, cName)
 	}
