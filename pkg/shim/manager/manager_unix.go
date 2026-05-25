@@ -133,6 +133,16 @@ func newShimSocket(ctx context.Context, root, path, id string, debug bool) (*shi
 	return s, nil
 }
 
+func shimSocketDir(bparams *bootapi.BootstrapParams) string {
+	if socketDir := bparams.GetSocketDir(); socketDir != "" {
+		return socketDir
+	}
+	if socketDir := os.Getenv("SHIM_SOCKET_DIR"); socketDir != "" {
+		return socketDir
+	}
+	return filepath.Join(defaults.DefaultStateDir, "s")
+}
+
 func (manager) Start(ctx context.Context, bparams *bootapi.BootstrapParams) (_ *bootapi.BootstrapResult, retErr error) {
 	id := bparams.InstanceID
 	debug := bparams.LogLevel <= bootapi.LogLevel_LOG_LEVEL_DEBUG
@@ -161,10 +171,7 @@ func (manager) Start(ctx context.Context, bparams *bootapi.BootstrapParams) (_ *
 			}
 		}
 	}()
-	socketDir := bparams.GetSocketDir()
-	if socketDir == "" {
-		socketDir = filepath.Join(defaults.DefaultStateDir, "s")
-	}
+	socketDir := shimSocketDir(bparams)
 	s, err := newShimSocket(ctx, socketDir, bparams.ContainerdGrpcAddress, grouping, false)
 	if err != nil {
 		if errdefs.IsAlreadyExists(err) {
