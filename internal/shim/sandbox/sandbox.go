@@ -54,9 +54,13 @@ type Disk struct {
 }
 
 type PmemImage struct {
-	ImageID   string
-	MountPath string
-	Readonly  bool
+	ImageID           string
+	MountPath         string
+	Readonly          bool
+	MerkleRootHex     string
+	MerkleLeavesPath  string
+	SignedSidecarPath string
+	VerifyingKeyHex   string
 }
 
 type NIC struct {
@@ -101,11 +105,19 @@ func WithDisk(blockID, mountPath string, flags DiskFlags) Opt {
 }
 
 func WithPmemImage(imageID, mountPath string, readonly bool) Opt {
+	return WithPmemImageVerification(imageID, mountPath, readonly, "", "", "", "")
+}
+
+func WithPmemImageVerification(imageID, mountPath string, readonly bool, merkleRootHex, merkleLeavesPath, signedSidecarPath, verifyingKeyHex string) Opt {
 	return func(o *Options) {
 		o.PmemImages = append(o.PmemImages, PmemImage{
-			ImageID:   imageID,
-			MountPath: mountPath,
-			Readonly:  readonly,
+			ImageID:           imageID,
+			MountPath:         mountPath,
+			Readonly:          readonly,
+			MerkleRootHex:     merkleRootHex,
+			MerkleLeavesPath:  merkleLeavesPath,
+			SignedSidecarPath: signedSidecarPath,
+			VerifyingKeyHex:   verifyingKeyHex,
 		})
 	}
 }

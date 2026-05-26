@@ -81,6 +81,14 @@ func (s *localsandbox) Start(ctx context.Context, opts ...sandbox.Opt) error {
 		if p.Readonly {
 			mountOpts = append(mountOpts, vm.WithReadOnly())
 		}
+		if p.MerkleRootHex != "" || p.MerkleLeavesPath != "" || p.SignedSidecarPath != "" || p.VerifyingKeyHex != "" {
+			mountOpts = append(mountOpts, vm.WithPmemImageVerification(
+				p.MerkleRootHex,
+				p.MerkleLeavesPath,
+				p.SignedSidecarPath,
+				p.VerifyingKeyHex,
+			))
+		}
 		if err := vmi.AddPmemImage(ctx, p.ImageID, p.MountPath, mountOpts...); err != nil {
 			return err
 		}

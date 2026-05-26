@@ -31,8 +31,15 @@ import (
 	"github.com/containerd/log"
 
 	"github.com/containerd/nerdbox/internal/erofs"
+	"github.com/containerd/nerdbox/internal/pmemimage"
 	"github.com/containerd/nerdbox/internal/shim/sandbox"
 	"github.com/containerd/nerdbox/internal/shim/task/bundle"
+)
+
+const (
+	annotationErofsTransport        = "io.containerd.nerdbox.erofs.transport"
+	annotationPmemImageVerification = "io.containerd.nerdbox.pmem-image.verification"
+	annotationPmemImageVerifyingKey = "io.containerd.nerdbox.pmem-image.verifying-key"
 )
 
 // diskAllocator assigns sequential virtio disk letters (vda, vdb, …).
@@ -55,13 +62,20 @@ type diskOptions struct {
 }
 
 type pmemImageOptions struct {
-	name     string
-	source   string
-	readOnly bool
+	name              string
+	source            string
+	readOnly          bool
+	merkleRootHex     string
+	merkleLeavesPath  string
+	signedSidecarPath string
+	verifyingKeyHex   string
 }
 
-func erofsTransportMode() (string, error) {
-	mode := strings.ToLower(strings.TrimSpace(os.Getenv("NERDBOX_EROFS_TRANSPORT")))
+func erofsTransportMode(annotations map[string]string) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(annotations[annotationErofsTransport]))
+	if mode == "" {
+		mode = strings.ToLower(strings.TrimSpace(os.Getenv("NERDBOX_EROFS_TRANSPORT")))
+	}
 	if mode == "" {
 		return "block", nil
 	}
@@ -73,12 +87,53 @@ func erofsTransportMode() (string, error) {
 	}
 }
 
+func pmemImageVerificationMode(annotations map[string]string) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(annotations[annotationPmemImageVerification]))
+	if mode == "" {
+		mode = strings.ToLower(strings.TrimSpace(os.Getenv("NERDBOX_PMEM_IMAGE_VERIFICATION")))
+	}
+	if mode == "" {
+		mode = strings.ToLower(strings.TrimSpace(os.Getenv("PMEM_IMAGE_VERIFICATION")))
+	}
+	if mode == "" {
+		return "none", nil
+	}
+	switch mode {
+	case "none", "optional-merkle", "required-merkle", "local-compute-merkle", "required-signed-sidecar":
+		return mode, nil
+	default:
+		return "", fmt.Errorf("invalid PMEM image verification mode %q: %w", mode, errdefs.ErrInvalidArgument)
+	}
+}
+
+func pmemImageVerifyingKeyHex(annotations map[string]string) string {
+	if key := strings.TrimSpace(annotations[annotationPmemImageVerifyingKey]); key != "" {
+		return key
+	}
+	if key := strings.TrimSpace(os.Getenv("NERDBOX_PMEM_IMAGE_VERIFYING_KEY")); key != "" {
+		return key
+	}
+	return strings.TrimSpace(os.Getenv("PMEM_IMAGE_VERIFYING_KEY"))
+}
+
 // transformMounts does not perform any local mounts but transforms
 // the mounts to be used inside the VM via virtio
-func transformMounts(ctx context.Context, id string, ms []*types.Mount, da *diskAllocator) ([]*types.Mount, []sandbox.Opt, error) {
-	erofsTransport, err := erofsTransportMode()
+func transformMounts(ctx context.Context, id string, ms []*types.Mount, da *diskAllocator, annotations map[string]string) ([]*types.Mount, []sandbox.Opt, error) {
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	erofsTransport, err := erofsTransportMode(annotations)
 	if err != nil {
 		return nil, nil, err
+	}
+	pmemVerification := "none"
+	pmemVerifyingKeyHex := ""
+	if erofsTransport == "pmem" {
+		pmemVerification, err = pmemImageVerificationMode(annotations)
+		if err != nil {
+			return nil, nil, err
+		}
+		pmemVerifyingKeyHex = pmemImageVerifyingKeyHex(annotations)
 	}
 
 	var (
@@ -108,16 +163,33 @@ func transformMounts(ctx context.Context, id string, ms []*types.Mount, da *disk
 				if len(devices) > 1 {
 					return nil, nil, fmt.Errorf("pmem EROFS transport does not support multi-device EROFS yet: %w", errdefs.ErrNotImplemented)
 				}
+				verification, err := preparePmemImageVerification(ctx, m.Source, pmemVerification, pmemVerifyingKeyHex)
+				if err != nil {
+					return nil, nil, err
+				}
 				name := fmt.Sprintf("pmem-%d-%s", pmems, id)
 				if len(name) > 36 {
 					name = name[:36]
 				}
 				device := fmt.Sprintf("/dev/pmem%d", pmems)
-				log.G(ctx).WithField("source", m.Source).WithField("device", device).Info("using pmem image for erofs mount")
+				logEntry := log.G(ctx).WithField("source", m.Source).WithField("device", device)
+				if verification.enabled() {
+					entry := logEntry.WithField("verification", pmemVerification)
+					if verification.merkleRootHex != "" {
+						entry = entry.WithField("merkle_root", verification.merkleRootHex)
+					}
+					entry.Info("using verified pmem image for erofs mount")
+				} else {
+					logEntry.Info("using pmem image for erofs mount")
+				}
 				addPmemImages = append(addPmemImages, pmemImageOptions{
-					name:     name,
-					source:   m.Source,
-					readOnly: true,
+					name:              name,
+					source:            m.Source,
+					readOnly:          true,
+					merkleRootHex:     verification.merkleRootHex,
+					merkleLeavesPath:  verification.merkleLeavesPath,
+					signedSidecarPath: verification.signedSidecarPath,
+					verifyingKeyHex:   verification.verifyingKeyHex,
 				})
 				am = append(am, &types.Mount{
 					Type:    "erofs",
@@ -238,10 +310,67 @@ func transformMounts(ctx context.Context, id string, ms []*types.Mount, da *disk
 		sbOpts = append(sbOpts, sandbox.WithDisk(do.name, do.source, flags))
 	}
 	for _, po := range addPmemImages {
-		sbOpts = append(sbOpts, sandbox.WithPmemImage(po.name, po.source, po.readOnly))
+		sbOpts = append(sbOpts, sandbox.WithPmemImageVerification(
+			po.name,
+			po.source,
+			po.readOnly,
+			po.merkleRootHex,
+			po.merkleLeavesPath,
+			po.signedSidecarPath,
+			po.verifyingKeyHex,
+		))
 	}
 
 	return am, sbOpts, err
+}
+
+type pmemImageVerification struct {
+	merkleRootHex     string
+	merkleLeavesPath  string
+	signedSidecarPath string
+	verifyingKeyHex   string
+}
+
+func (v pmemImageVerification) enabled() bool {
+	return v.merkleRootHex != "" || v.signedSidecarPath != ""
+}
+
+func preparePmemImageVerification(ctx context.Context, source, mode, verifyingKeyHex string) (pmemImageVerification, error) {
+	switch mode {
+	case "none":
+		return pmemImageVerification{}, nil
+	case "required-signed-sidecar":
+		if verifyingKeyHex == "" {
+			return pmemImageVerification{}, fmt.Errorf("PMEM image signed sidecar verification requires %s: %w", annotationPmemImageVerifyingKey, errdefs.ErrInvalidArgument)
+		}
+		sidecarPath := source + ".sig"
+		leavesPath := source + ".leaves"
+		for _, path := range []string{sidecarPath, leavesPath} {
+			if _, err := os.Stat(path); err != nil {
+				return pmemImageVerification{}, fmt.Errorf("PMEM image verification metadata %s unavailable: %w", path, err)
+			}
+		}
+		return pmemImageVerification{
+			merkleLeavesPath:  leavesPath,
+			signedSidecarPath: sidecarPath,
+			verifyingKeyHex:   verifyingKeyHex,
+		}, nil
+	case "optional-merkle", "required-merkle", "local-compute-merkle":
+		commitment, err := pmemimage.PrepareMerkleCommitment(source)
+		if err == nil {
+			return pmemImageVerification{
+				merkleRootHex:    commitment.RootHex,
+				merkleLeavesPath: commitment.LeavesPath,
+			}, nil
+		}
+		if mode == "optional-merkle" {
+			log.G(ctx).WithError(err).WithField("source", source).Warn("failed to prepare PMEM image Merkle verification; continuing without verification")
+			return pmemImageVerification{}, nil
+		}
+		return pmemImageVerification{}, fmt.Errorf("failed to prepare PMEM image Merkle verification for %q: %w", source, err)
+	default:
+		return pmemImageVerification{}, fmt.Errorf("invalid PMEM image verification mode %q: %w", mode, errdefs.ErrInvalidArgument)
+	}
 }
 
 func filterOptions(options []string) []string {

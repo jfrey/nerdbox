@@ -20,6 +20,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/opencontainers/runtime-spec/specs-go"
@@ -50,7 +51,7 @@ func TestTransformMountsErofsBlockTransport(t *testing.T) {
 			Target:  "/",
 			Options: []string{"loop", "ro"},
 		},
-	}, &da)
+	}, &da, nil)
 
 	assert.NoError(t, err)
 	if !assert.Len(t, mounts, 1) {
@@ -77,7 +78,7 @@ func TestTransformMountsErofsPmemTransport(t *testing.T) {
 			Target:  "/",
 			Options: []string{"loop", "ro"},
 		},
-	}, &da)
+	}, &da, nil)
 
 	assert.NoError(t, err)
 	if !assert.Len(t, mounts, 1) {
@@ -94,6 +95,95 @@ func TestTransformMountsErofsPmemTransport(t *testing.T) {
 	}, sbOpts.PmemImages)
 }
 
+func TestTransformMountsErofsPmemTransportWithRequiredMerkle(t *testing.T) {
+	t.Setenv("NERDBOX_EROFS_TRANSPORT", "pmem")
+	t.Setenv("PMEM_IMAGE_VERIFICATION", "required-merkle")
+	image := filepath.Join(t.TempDir(), "root.erofs")
+	assert.NoError(t, os.WriteFile(image, []byte("hello-pmem"), 0o600))
+	da := newDiskAllocator()
+
+	mounts, opts, err := transformMounts(context.Background(), "cid", []*types.Mount{
+		{
+			Type:    "erofs",
+			Source:  image,
+			Target:  "/",
+			Options: []string{"loop", "ro"},
+		},
+	}, &da, nil)
+
+	assert.NoError(t, err)
+	if !assert.Len(t, mounts, 1) {
+		return
+	}
+	assert.Equal(t, "/dev/pmem0", mounts[0].Source)
+
+	sbOpts := applyOpts(opts)
+	if assert.Len(t, sbOpts.PmemImages, 1) {
+		pmem := sbOpts.PmemImages[0]
+		assert.Equal(t, "pmem-0-cid", pmem.ImageID)
+		assert.Equal(t, image, pmem.MountPath)
+		assert.True(t, pmem.Readonly)
+		assert.Len(t, pmem.MerkleRootHex, 64)
+		assert.NotEmpty(t, pmem.MerkleLeavesPath)
+		assert.FileExists(t, pmem.MerkleLeavesPath)
+	}
+}
+
+func TestTransformMountsErofsPmemTransportWithSignedSidecarAnnotations(t *testing.T) {
+	image := filepath.Join(t.TempDir(), "root.erofs")
+	assert.NoError(t, os.WriteFile(image, []byte("hello-pmem"), 0o600))
+	assert.NoError(t, os.WriteFile(image+".sig", []byte("signed"), 0o600))
+	assert.NoError(t, os.WriteFile(image+".leaves", []byte("leaves"), 0o600))
+	verifyingKey := strings.Repeat("a1", 32)
+	da := newDiskAllocator()
+
+	mounts, opts, err := transformMounts(context.Background(), "cid", []*types.Mount{
+		{
+			Type:    "erofs",
+			Source:  image,
+			Target:  "/",
+			Options: []string{"loop", "ro"},
+		},
+	}, &da, map[string]string{
+		annotationErofsTransport:        "pmem",
+		annotationPmemImageVerification: "required-signed-sidecar",
+		annotationPmemImageVerifyingKey: verifyingKey,
+	})
+
+	assert.NoError(t, err)
+	if !assert.Len(t, mounts, 1) {
+		return
+	}
+	assert.Equal(t, "/dev/pmem0", mounts[0].Source)
+
+	sbOpts := applyOpts(opts)
+	if assert.Len(t, sbOpts.PmemImages, 1) {
+		pmem := sbOpts.PmemImages[0]
+		assert.Equal(t, image, pmem.MountPath)
+		assert.Equal(t, image+".leaves", pmem.MerkleLeavesPath)
+		assert.Equal(t, image+".sig", pmem.SignedSidecarPath)
+		assert.Equal(t, verifyingKey, pmem.VerifyingKeyHex)
+		assert.Empty(t, pmem.MerkleRootHex)
+	}
+}
+
+func TestTransformMountsErofsPmemTransportRequiredMerkleFailsClosed(t *testing.T) {
+	t.Setenv("NERDBOX_EROFS_TRANSPORT", "pmem")
+	t.Setenv("PMEM_IMAGE_VERIFICATION", "required-merkle")
+	da := newDiskAllocator()
+
+	_, opts, err := transformMounts(context.Background(), "cid", []*types.Mount{
+		{
+			Type:   "erofs",
+			Source: filepath.Join(t.TempDir(), "missing.erofs"),
+			Target: "/",
+		},
+	}, &da, nil)
+
+	assert.Error(t, err)
+	assert.Empty(t, applyOpts(opts).PmemImages)
+}
+
 func TestTransformMountsErofsPmemRejectsMultiDevice(t *testing.T) {
 	t.Setenv("NERDBOX_EROFS_TRANSPORT", "pmem")
 	da := newDiskAllocator()
@@ -105,7 +195,7 @@ func TestTransformMountsErofsPmemRejectsMultiDevice(t *testing.T) {
 			Target:  "/",
 			Options: []string{"device=/tmp/layer.erofs"},
 		},
-	}, &da)
+	}, &da, nil)
 
 	assert.Error(t, err)
 	assert.Empty(t, applyOpts(opts).PmemImages)

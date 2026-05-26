@@ -205,7 +205,19 @@ func (v *vmInstance) AddPmemImage(ctx context.Context, imageID, imagePath string
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
-	if err := v.vmc.AddPmemImage(imageID, imagePath); err != nil {
+	var mc vm.MountConfig
+	for _, o := range opts {
+		o(&mc)
+	}
+
+	if err := v.vmc.AddPmemImage(
+		imageID,
+		imagePath,
+		mc.PmemImageMerkleRootHex,
+		mc.PmemImageMerkleLeavesPath,
+		mc.PmemImageSignedSidecarPath,
+		mc.PmemImageVerifyingKeyHex,
+	); err != nil {
 		return fmt.Errorf("failed to add pmem image at '%s': %w", imagePath, err)
 	}
 

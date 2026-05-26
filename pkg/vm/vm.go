@@ -107,6 +107,25 @@ type MountConfig struct {
 	// Vmdk indicates that the backing file is a VMDK image rather than a
 	// raw block device. Only meaningful for [Instance.AddDisk].
 	Vmdk bool
+
+	// PmemImageMerkleRootHex is the SHA-256 Merkle root used to verify
+	// 4 KiB image blocks before they are mapped into a virtio-pmem image.
+	// Only meaningful for [Instance.AddPmemImage].
+	PmemImageMerkleRootHex string
+
+	// PmemImageMerkleLeavesPath points at a raw 32-byte-per-leaf sidecar
+	// for the same root. It lets the VMM avoid hashing the whole local
+	// image at VM startup. Only meaningful for [Instance.AddPmemImage].
+	PmemImageMerkleLeavesPath string
+
+	// PmemImageSignedSidecarPath points at a signed sidecar containing the
+	// Merkle root, image size, and signature. Only meaningful for
+	// [Instance.AddPmemImage].
+	PmemImageSignedSidecarPath string
+
+	// PmemImageVerifyingKeyHex is the Ed25519 verifying key used for
+	// PmemImageSignedSidecarPath. Only meaningful for [Instance.AddPmemImage].
+	PmemImageVerifyingKeyHex string
 }
 
 // MountOpt mutates a [MountConfig] value. Options are applied in order.
@@ -233,6 +252,24 @@ func WithReadOnly() MountOpt {
 func WithVmdk() MountOpt {
 	return func(o *MountConfig) {
 		o.Vmdk = true
+	}
+}
+
+// WithPmemImageMerkle asks the VMM to verify a virtio-pmem image against a
+// SHA-256 Merkle root before mapping pages into the guest. leavesPath may be
+// empty, in which case the VMM may derive leaves from the image at startup.
+func WithPmemImageMerkle(rootHex, leavesPath string) MountOpt {
+	return WithPmemImageVerification(rootHex, leavesPath, "", "")
+}
+
+// WithPmemImageVerification asks the VMM to verify a virtio-pmem image before
+// mapping pages into the guest.
+func WithPmemImageVerification(rootHex, leavesPath, sidecarPath, verifyingKeyHex string) MountOpt {
+	return func(o *MountConfig) {
+		o.PmemImageMerkleRootHex = rootHex
+		o.PmemImageMerkleLeavesPath = leavesPath
+		o.PmemImageSignedSidecarPath = sidecarPath
+		o.PmemImageVerifyingKeyHex = verifyingKeyHex
 	}
 }
 
