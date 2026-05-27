@@ -31,7 +31,6 @@ import (
 	"github.com/containerd/log"
 
 	"github.com/containerd/nerdbox/internal/erofs"
-	"github.com/containerd/nerdbox/internal/pmemimage"
 	"github.com/containerd/nerdbox/internal/shim/sandbox"
 	"github.com/containerd/nerdbox/internal/shim/task/bundle"
 )
@@ -62,13 +61,12 @@ type diskOptions struct {
 }
 
 type pmemImageOptions struct {
-	name              string
-	source            string
-	readOnly          bool
-	merkleRootHex     string
-	merkleLeavesPath  string
-	signedSidecarPath string
-	verifyingKeyHex   string
+	name                string
+	source              string
+	readOnly            bool
+	verityParamsPath    string
+	veritySignaturePath string
+	verifyingKeyHex     string
 }
 
 func erofsTransportMode(annotations map[string]string) (string, error) {
@@ -99,7 +97,7 @@ func pmemImageVerificationMode(annotations map[string]string) (string, error) {
 		return "none", nil
 	}
 	switch mode {
-	case "none", "optional-merkle", "required-merkle", "local-compute-merkle", "required-signed-sidecar":
+	case "none", "required-dm-verity":
 		return mode, nil
 	default:
 		return "", fmt.Errorf("invalid PMEM image verification mode %q: %w", mode, errdefs.ErrInvalidArgument)
@@ -175,21 +173,20 @@ func transformMounts(ctx context.Context, id string, ms []*types.Mount, da *disk
 				logEntry := log.G(ctx).WithField("source", m.Source).WithField("device", device)
 				if verification.enabled() {
 					entry := logEntry.WithField("verification", pmemVerification)
-					if verification.merkleRootHex != "" {
-						entry = entry.WithField("merkle_root", verification.merkleRootHex)
+					if verification.verityParamsPath != "" {
+						entry = entry.WithField("verity_params", verification.verityParamsPath)
 					}
 					entry.Info("using verified pmem image for erofs mount")
 				} else {
 					logEntry.Info("using pmem image for erofs mount")
 				}
 				addPmemImages = append(addPmemImages, pmemImageOptions{
-					name:              name,
-					source:            m.Source,
-					readOnly:          true,
-					merkleRootHex:     verification.merkleRootHex,
-					merkleLeavesPath:  verification.merkleLeavesPath,
-					signedSidecarPath: verification.signedSidecarPath,
-					verifyingKeyHex:   verification.verifyingKeyHex,
+					name:                name,
+					source:              m.Source,
+					readOnly:            true,
+					verityParamsPath:    verification.verityParamsPath,
+					veritySignaturePath: verification.veritySignaturePath,
+					verifyingKeyHex:     verification.verifyingKeyHex,
 				})
 				am = append(am, &types.Mount{
 					Type:    "erofs",
@@ -314,9 +311,8 @@ func transformMounts(ctx context.Context, id string, ms []*types.Mount, da *disk
 			po.name,
 			po.source,
 			po.readOnly,
-			po.merkleRootHex,
-			po.merkleLeavesPath,
-			po.signedSidecarPath,
+			po.verityParamsPath,
+			po.veritySignaturePath,
 			po.verifyingKeyHex,
 		))
 	}
@@ -325,49 +321,35 @@ func transformMounts(ctx context.Context, id string, ms []*types.Mount, da *disk
 }
 
 type pmemImageVerification struct {
-	merkleRootHex     string
-	merkleLeavesPath  string
-	signedSidecarPath string
-	verifyingKeyHex   string
+	verityParamsPath    string
+	veritySignaturePath string
+	verifyingKeyHex     string
 }
 
 func (v pmemImageVerification) enabled() bool {
-	return v.merkleRootHex != "" || v.signedSidecarPath != ""
+	return v.verityParamsPath != ""
 }
 
 func preparePmemImageVerification(ctx context.Context, source, mode, verifyingKeyHex string) (pmemImageVerification, error) {
 	switch mode {
 	case "none":
 		return pmemImageVerification{}, nil
-	case "required-signed-sidecar":
+	case "required-dm-verity":
 		if verifyingKeyHex == "" {
-			return pmemImageVerification{}, fmt.Errorf("PMEM image signed sidecar verification requires %s: %w", annotationPmemImageVerifyingKey, errdefs.ErrInvalidArgument)
+			return pmemImageVerification{}, fmt.Errorf("PMEM image dm-verity verification requires %s: %w", annotationPmemImageVerifyingKey, errdefs.ErrInvalidArgument)
 		}
-		sidecarPath := source + ".sig"
-		leavesPath := source + ".leaves"
-		for _, path := range []string{sidecarPath, leavesPath} {
+		paramsPath := source + ".verity.json"
+		signaturePath := source + ".verity.sig"
+		for _, path := range []string{paramsPath, signaturePath} {
 			if _, err := os.Stat(path); err != nil {
 				return pmemImageVerification{}, fmt.Errorf("PMEM image verification metadata %s unavailable: %w", path, err)
 			}
 		}
 		return pmemImageVerification{
-			merkleLeavesPath:  leavesPath,
-			signedSidecarPath: sidecarPath,
-			verifyingKeyHex:   verifyingKeyHex,
+			verityParamsPath:    paramsPath,
+			veritySignaturePath: signaturePath,
+			verifyingKeyHex:     verifyingKeyHex,
 		}, nil
-	case "optional-merkle", "required-merkle", "local-compute-merkle":
-		commitment, err := pmemimage.PrepareMerkleCommitment(source)
-		if err == nil {
-			return pmemImageVerification{
-				merkleRootHex:    commitment.RootHex,
-				merkleLeavesPath: commitment.LeavesPath,
-			}, nil
-		}
-		if mode == "optional-merkle" {
-			log.G(ctx).WithError(err).WithField("source", source).Warn("failed to prepare PMEM image Merkle verification; continuing without verification")
-			return pmemImageVerification{}, nil
-		}
-		return pmemImageVerification{}, fmt.Errorf("failed to prepare PMEM image Merkle verification for %q: %w", source, err)
 	default:
 		return pmemImageVerification{}, fmt.Errorf("invalid PMEM image verification mode %q: %w", mode, errdefs.ErrInvalidArgument)
 	}

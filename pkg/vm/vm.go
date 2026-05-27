@@ -108,24 +108,50 @@ type MountConfig struct {
 	// raw block device. Only meaningful for [Instance.AddDisk].
 	Vmdk bool
 
-	// PmemImageMerkleRootHex is the SHA-256 Merkle root used to verify
-	// 4 KiB image blocks before they are mapped into a virtio-pmem image.
+	// PmemImageVerityParamsPath points at Sailor's typed dm-verity params
+	// JSON for an image with an appended dm-verity hash tree.
 	// Only meaningful for [Instance.AddPmemImage].
-	PmemImageMerkleRootHex string
+	PmemImageVerityParamsPath string
 
-	// PmemImageMerkleLeavesPath points at a raw 32-byte-per-leaf sidecar
-	// for the same root. It lets the VMM avoid hashing the whole local
-	// image at VM startup. Only meaningful for [Instance.AddPmemImage].
-	PmemImageMerkleLeavesPath string
-
-	// PmemImageSignedSidecarPath points at a signed sidecar containing the
-	// Merkle root, image size, and signature. Only meaningful for
-	// [Instance.AddPmemImage].
-	PmemImageSignedSidecarPath string
+	// PmemImageVeritySignaturePath points at the detached signature for
+	// PmemImageVerityParamsPath. Only meaningful for [Instance.AddPmemImage].
+	PmemImageVeritySignaturePath string
 
 	// PmemImageVerifyingKeyHex is the Ed25519 verifying key used for
-	// PmemImageSignedSidecarPath. Only meaningful for [Instance.AddPmemImage].
+	// PmemImageVeritySignaturePath. Only meaningful for [Instance.AddPmemImage].
 	PmemImageVerifyingKeyHex string
+
+	// PmemImageURI points at a future remote image byte source. Current
+	// implementations reject remote sources until a remote page source is wired.
+	PmemImageURI string
+
+	// PmemImageVerityParamsURI points at future remote dm-verity params metadata.
+	PmemImageVerityParamsURI string
+
+	// PmemImageVeritySignatureURI points at future remote signature metadata.
+	PmemImageVeritySignatureURI string
+
+	// PmemImageAuthRef is an opaque credential reference for future remote
+	// retrieval. It must not contain raw credentials.
+	PmemImageAuthRef string
+}
+
+// PmemImageConfig is the structured form of a virtio-pmem image attachment.
+// Local images use ImagePath. Remote images will use ImageURI plus optional
+// metadata URIs and AuthRef once remote retrieval is implemented.
+type PmemImageConfig struct {
+	ImageID             string
+	ImagePath           string
+	ImageURI            string
+	Format              string
+	VerityParamsPath    string
+	VerityParamsURI     string
+	VeritySignaturePath string
+	VeritySignatureURI  string
+	VerifyingKeyHex     string
+	Loading             string
+	AuthRef             string
+	Readonly            bool
 }
 
 // MountOpt mutates a [MountConfig] value. Options are applied in order.
@@ -192,6 +218,10 @@ type Instance interface {
 	// read-only attachment. Must be called before [Instance.Start].
 	AddPmemImage(ctx context.Context, imageID, imagePath string, opts ...MountOpt) error
 
+	// AddPmemImageConfig attaches a virtio-pmem image using a structured config.
+	// It is the extension point for future remote image sources.
+	AddPmemImageConfig(ctx context.Context, config PmemImageConfig) error
+
 	// AddNIC attaches a virtio-net interface to the guest. endpoint is
 	// the path to the host-side AF_UNIX socket that bridges packets to
 	// the network helper, mac is the link-layer address presented to the
@@ -255,21 +285,24 @@ func WithVmdk() MountOpt {
 	}
 }
 
-// WithPmemImageMerkle asks the VMM to verify a virtio-pmem image against a
-// SHA-256 Merkle root before mapping pages into the guest. leavesPath may be
-// empty, in which case the VMM may derive leaves from the image at startup.
-func WithPmemImageMerkle(rootHex, leavesPath string) MountOpt {
-	return WithPmemImageVerification(rootHex, leavesPath, "", "")
-}
-
 // WithPmemImageVerification asks the VMM to verify a virtio-pmem image before
 // mapping pages into the guest.
-func WithPmemImageVerification(rootHex, leavesPath, sidecarPath, verifyingKeyHex string) MountOpt {
+func WithPmemImageVerification(paramsPath, signaturePath, verifyingKeyHex string) MountOpt {
 	return func(o *MountConfig) {
-		o.PmemImageMerkleRootHex = rootHex
-		o.PmemImageMerkleLeavesPath = leavesPath
-		o.PmemImageSignedSidecarPath = sidecarPath
+		o.PmemImageVerityParamsPath = paramsPath
+		o.PmemImageVeritySignaturePath = signaturePath
 		o.PmemImageVerifyingKeyHex = verifyingKeyHex
+	}
+}
+
+// WithPmemImageRemote records future remote PMEM source metadata. Current
+// libkrun/Sailor shims reject these fields until remote retrieval is wired.
+func WithPmemImageRemote(imageURI, paramsURI, signatureURI, authRef string) MountOpt {
+	return func(o *MountConfig) {
+		o.PmemImageURI = imageURI
+		o.PmemImageVerityParamsURI = paramsURI
+		o.PmemImageVeritySignatureURI = signatureURI
+		o.PmemImageAuthRef = authRef
 	}
 }
 

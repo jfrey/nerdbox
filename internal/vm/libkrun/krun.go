@@ -51,20 +51,19 @@ const (
 const pmemImageConfigVersion = 1
 
 type pmemImageConfigV1 struct {
-	Version           uint32
-	Size              uint32
-	ImageID           unsafe.Pointer
-	ImagePath         unsafe.Pointer
-	ImageURI          unsafe.Pointer
-	Format            unsafe.Pointer
-	MerkleRootHex     unsafe.Pointer
-	MerkleLeavesPath  unsafe.Pointer
-	MerkleLeavesURI   unsafe.Pointer
-	SignedSidecarPath unsafe.Pointer
-	SignedSidecarURI  unsafe.Pointer
-	VerifyingKeyHex   unsafe.Pointer
-	Loading           unsafe.Pointer
-	AuthRef           unsafe.Pointer
+	Version             uint32
+	Size                uint32
+	ImageID             unsafe.Pointer
+	ImagePath           unsafe.Pointer
+	ImageURI            unsafe.Pointer
+	Format              unsafe.Pointer
+	VerityParamsPath    unsafe.Pointer
+	VerityParamsURI     unsafe.Pointer
+	VeritySignaturePath unsafe.Pointer
+	VeritySignatureURI  unsafe.Pointer
+	VerifyingKeyHex     unsafe.Pointer
+	Loading             unsafe.Pointer
+	AuthRef             unsafe.Pointer
 }
 
 type vmcontext struct {
@@ -198,21 +197,39 @@ func (vmc *vmcontext) AddDisk2(blockID, path string, diskFmt uint32, readonly bo
 	return nil
 }
 
-func (vmc *vmcontext) AddPmemImage(imageID, path, merkleRootHex, merkleLeavesPath, signedSidecarPath, verifyingKeyHex string) error {
+func (vmc *vmcontext) AddPmemImage(imageID, path, verityParamsPath, veritySignaturePath, verifyingKeyHex string) error {
+	return vmc.AddPmemImageConfig(vm.PmemImageConfig{
+		ImageID:             imageID,
+		ImagePath:           path,
+		Format:              "erofs",
+		VerityParamsPath:    verityParamsPath,
+		VeritySignaturePath: veritySignaturePath,
+		VerifyingKeyHex:     verifyingKeyHex,
+	})
+}
+
+func (vmc *vmcontext) AddPmemImageConfig(config vm.PmemImageConfig) error {
 	if vmc.lib.AddPmemImageConfig == nil {
 		return fmt.Errorf("libkrun does not support pmem images")
 	}
+	if config.Format == "" {
+		config.Format = "erofs"
+	}
 
 	cfg := pmemImageConfigV1{
-		Version:           pmemImageConfigVersion,
-		Size:              uint32(unsafe.Sizeof(pmemImageConfigV1{})),
-		ImageID:           vmc.cString(imageID),
-		ImagePath:         vmc.cString(path),
-		Format:            vmc.cString("erofs"),
-		MerkleRootHex:     vmc.cString(merkleRootHex),
-		MerkleLeavesPath:  vmc.cString(merkleLeavesPath),
-		SignedSidecarPath: vmc.cString(signedSidecarPath),
-		VerifyingKeyHex:   vmc.cString(verifyingKeyHex),
+		Version:             pmemImageConfigVersion,
+		Size:                uint32(unsafe.Sizeof(pmemImageConfigV1{})),
+		ImageID:             vmc.cString(config.ImageID),
+		ImagePath:           vmc.cString(config.ImagePath),
+		ImageURI:            vmc.cString(config.ImageURI),
+		Format:              vmc.cString(config.Format),
+		VerityParamsPath:    vmc.cString(config.VerityParamsPath),
+		VerityParamsURI:     vmc.cString(config.VerityParamsURI),
+		VeritySignaturePath: vmc.cString(config.VeritySignaturePath),
+		VeritySignatureURI:  vmc.cString(config.VeritySignatureURI),
+		VerifyingKeyHex:     vmc.cString(config.VerifyingKeyHex),
+		Loading:             vmc.cString(config.Loading),
+		AuthRef:             vmc.cString(config.AuthRef),
 	}
 
 	ret := vmc.lib.AddPmemImageConfig(vmc.ctxID, unsafe.Pointer(&cfg))

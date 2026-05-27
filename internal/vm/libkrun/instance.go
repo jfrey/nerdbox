@@ -202,23 +202,35 @@ func (v *vmInstance) AddDisk(ctx context.Context, blockID, mountPath string, opt
 }
 
 func (v *vmInstance) AddPmemImage(ctx context.Context, imageID, imagePath string, opts ...vm.MountOpt) error {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-
 	var mc vm.MountConfig
 	for _, o := range opts {
 		o(&mc)
 	}
+	return v.AddPmemImageConfig(ctx, vm.PmemImageConfig{
+		ImageID:             imageID,
+		ImagePath:           imagePath,
+		ImageURI:            mc.PmemImageURI,
+		Format:              "erofs",
+		VerityParamsPath:    mc.PmemImageVerityParamsPath,
+		VerityParamsURI:     mc.PmemImageVerityParamsURI,
+		VeritySignaturePath: mc.PmemImageVeritySignaturePath,
+		VeritySignatureURI:  mc.PmemImageVeritySignatureURI,
+		VerifyingKeyHex:     mc.PmemImageVerifyingKeyHex,
+		AuthRef:             mc.PmemImageAuthRef,
+		Readonly:            mc.Readonly,
+	})
+}
 
-	if err := v.vmc.AddPmemImage(
-		imageID,
-		imagePath,
-		mc.PmemImageMerkleRootHex,
-		mc.PmemImageMerkleLeavesPath,
-		mc.PmemImageSignedSidecarPath,
-		mc.PmemImageVerifyingKeyHex,
-	); err != nil {
-		return fmt.Errorf("failed to add pmem image at '%s': %w", imagePath, err)
+func (v *vmInstance) AddPmemImageConfig(_ context.Context, config vm.PmemImageConfig) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	if config.Format == "" {
+		config.Format = "erofs"
+	}
+
+	if err := v.vmc.AddPmemImageConfig(config); err != nil {
+		return fmt.Errorf("failed to add pmem image at '%s': %w", config.ImagePath, err)
 	}
 
 	return nil
